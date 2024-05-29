@@ -67,39 +67,3 @@ def predict_on_image(image_path):
 print("Modèles chargés:")
 print(vbc_model.summary())
 
-# Fonction pour afficher les résultats de la segmentation
-def visualize_segmentation(image, segmentation, num_classes_seg):
-    segmentation = np.argmax(segmentation[0], axis=-1).astype(np.uint8)
-    segmentation = cv2.resize(segmentation, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
-    
-    mask = np.zeros_like(image)
-    for i in range(num_classes_seg):
-        mask[segmentation == i] = (0, 255, 0)  # You can customize colors for different classes
-    
-    image = cv2.addWeighted(image, 1, mask, 0.5, 0)
-    return image
-
-# Exemple d'utilisation
-try:
-    # Pour une image
-    image_path = 'IMG_3526.JPG'
-    classification, detection, segmentation, action, image = predict_on_image(image_path)
-    print('Classification:', classification)
-    print('Détection:', detection)
-    print('Segmentation:', segmentation)
-    print('Action:', action)
-    
-    # Affichage des résultats sur l'image
-    cv2.putText(image, 'Classification: {}'.format(np.argmax(classification)), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-    cv2.putText(image, 'Action: {}'.format(np.argmax(action)), (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    
-    image = visualize_segmentation(image, segmentation, num_classes_seg=21)
-    
-    output_image_path = 'output_image.jpg'
-    cv2.imwrite(output_image_path, image)
-    print(f"Résultats enregistrés dans '{output_image_path}'")
-
-    # Pour une vidéo
-    # predict_on_video('path/to/your/video.mp4')
-except ValueError as e:
-    print(e)
