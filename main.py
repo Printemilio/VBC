@@ -1,28 +1,105 @@
+import cv2
+import numpy as np
 import tensorflow as tf
+from tensorflow.keras.applications import ResNet50, EfficientNetB0, MobileNetV2
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Input, Dense, GlobalAveragePooling2D, Conv2D, UpSampling2D, BatchNormalization, ReLU, concatenate
 
-# Télécharger les modèles pré-entraînés
-efficientnet_url = "https://github.com/balavenkatesh3322/CV-pretrained-model/releases/download/1.0/efficientnet.h5"
-mobilenet_url = "https://github.com/balavenkatesh3322/CV-pretrained-model/releases/download/1.0/mobilenet.h5"
-resnet_url = "https://github.com/balavenkatesh3322/CV-pretrained-model/releases/download/1.0/resnet.h5"
+# Crée le modèle VBC en utilisant des modèles préentraînés pour extraire des caractéristiques et ajoute des têtes personnalisées.
+def create_vbc_model(input_shape=(224, 224, 3), num_classes=1000, num_classes_seg=21, num_classes_action=10):
+    inputs = Input(shape=input_shape)
 
-# Charger les modèles pré-entraînés localement
-efficientnet_model = tf.keras.models.load_model(efficientnet_url)
-mobilenet_model = tf.keras.models.load_model(mobilenet_url)
-resnet_model = tf.keras.models.load_model(resnet_url)
+    # Charger des modèles préentraînés
+    base_model_resnet = ResNet50(weights='imagenet', include_top=False, input_tensor=inputs)
+    base_model_efficientnet = EfficientNetB0(weights='imagenet', include_top=False, input_tensor=inputs)
+    base_model_mobilenet = MobileNetV2(weights='imagenet', include_top=False, input_tensor=inputs)
 
-# Créer un modèle combiné
-input_tensor = Input(shape=(None, None, 3))
-efficientnet_output = efficientnet_model(input_tensor)
-mobilenet_output = mobilenet_model(input_tensor)
-resnet_output = resnet_model(input_tensor)
+    # Extraire des caractéristiques
+    features_resnet = GlobalAveragePooling2D()(base_model_resnet.output)
+    features_efficientnet = GlobalAveragePooling2D()(base_model_efficientnet.output)
+    features_mobilenet = GlobalAveragePooling2D()(base_model_mobilenet.output)
 
-# Concaténer les sorties des trois modèles
-combined_output = tf.concat([efficientnet_output, mobilenet_output, resnet_output], axis=-1)
+    # Concaténer les caractéristiques
+    combined_features = concatenate([features_resnet, features_efficientnet, features_mobilenet], axis=-1)
 
-# Créer le modèle combiné
-combined_model = Model(inputs=input_tensor, outputs=combined_output)
+    # Tête de classification
+    classification_output = Dense(num_classes, activation='softmax', name='classification')(combined_features)
 
-# Afficher le résumé du modèle combiné
-print(combined_model.summary())
+    # Tête de détection d'objets
+    detection_output = Dense(4 + 1 + num_classes, activation='sigmoid', name='detection')(combined_features)
+
+    # Tête de segmentation sémantique
+    seg = Conv2D(128, (3, 3), padding='same')(base_model_resnet.output)
+    seg = BatchNormalization()(seg)
+    seg = ReLU()(seg)
+    seg = UpSampling2D(size=(4, 4))(seg)
+    segmentation_output = Conv2D(num_classes_seg, (1, 1), activation='softmax', name='segmentation')(seg)
+
+    # Tête de reconnaissance d'actions humaines
+    action_output = Dense(num_classes_action, activation='softmax', name='action')(combined_features)
+
+    model = Model(inputs=inputs, outputs=[classification_output, detection_output, segmentation_output, action_output], name='VBC_Model')
+
+    return model
+
+# Initialisation du modèle
+vbc_model = create_vbc_model()
+
+# Fonction pour prétraiter une image
+def preprocess_image(image, target_size=(224, 224)):
+    if image is None:
+        raise ValueError("L'image est vide. Vérifiez le chemin du fichier.")
+    image = cv2.resize(image, target_size)
+    image = image.astype('float32') / 255.0
+    image = np.expand_dims(image, axis=0)
+    return image
+
+# Fonction pour effectuer l'inférence sur une image
+def predict_on_image(image_path):
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Impossible de lire l'image à partir du chemin: {image_path}")
+    preprocessed_image = preprocess_image(image)
+    classification, detection, segmentation, action = vbc_model.predict(preprocessed_image)
+    return classification, detection, segmentation, action, image
+
+# Vérification des modèles préentraînés
+print("Modèles chargés:")
+print(vbc_model.summary())
+
+# Fonction pour afficher les résultats de la segmentation
+def visualize_segmentation(image, segmentation, num_classes_seg):
+    segmentation = np.argmax(segmentation[0], axis=-1).astype(np.uint8)
+    segmentation = cv2.resize(segmentation, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+    
+    mask = np.zeros_like(image)
+    for i in range(num_classes_seg):
+        mask[segmentation == i] = (0, 255, 0)  # You can customize colors for different classes
+    
+    image = cv2.addWeighted(image, 1, mask, 0.5, 0)
+    return image
+
+# Exemple d'utilisation
+try:
+    # Pour une image
+    image_path = 'IMG_3526.JPG'
+    classification, detection, segmentation, action, image = predict_on_image(image_path)
+    print('Classification:', classification)
+    print('Détection:', detection)
+    print('Segmentation:', segmentation)
+    print('Action:', action)
+    
+    # Affichage des résultats sur l'image
+    cv2.putText(image, 'Classification: {}'.format(np.argmax(classification)), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    cv2.putText(image, 'Action: {}'.format(np.argmax(action)), (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    
+    image = visualize_segmentation(image, segmentation, num_classes_seg=21)
+    
+    output_image_path = 'output_image.jpg'
+    cv2.imwrite(output_image_path, image)
+    print(f"Résultats enregistrés dans '{output_image_path}'")
+
+    # Pour une vidéo
+    # predict_on_video('path/to/your/video.mp4')
+except ValueError as e:
+    print(e)
